@@ -1,0 +1,13 @@
+python-telegram-bot==21.4
+openai==1.51.0
+anthropic==0.39.0
+httpx==0.27.2
+SQLAlchemy==2.0.35
+psycopg2-binary==2.9.9
+qrcode[pil]==7.4.2
+reportlab==4.2.5
+pdfplumber==0.11.9
+pdf2image==1.17.0
+pypdf==5.9.0
+python-dotenv==1.0.1
+Pillow==10.4.0
