@@ -133,12 +133,29 @@ def find_or_create_client(company_session, name, phone, address):
     return client
 
 
+def is_name_missing(client) -> bool:
+    return not client.name or client.name.strip().lower() == "unknown client"
+
+
+def missing_client_fields(client) -> list:
+    """Returns which of name/phone/address still need to be filled in, in
+    the order they should be asked for."""
+    missing = []
+    if is_name_missing(client):
+        missing.append("name")
+    if not client.phone:
+        missing.append("phone")
+    if not client.address:
+        missing.append("address")
+    return missing
+
+
 def draft_caption(inv: Invoice, client: Client, company: Company) -> str:
     lines = [
         f"📋 *{inv.doc_type.upper()} draft* `{inv.invoice_number}` (id: {inv.id})",
         f"*Company:* {company.name}",
         "",
-        f"*Client:* {client.name}",
+        f"*Client:* {'⚠️ MISSING' if is_name_missing(client) else client.name}",
         f"*Phone:* {client.phone or '⚠️ MISSING'}",
         f"*Address:* {client.address or '⚠️ MISSING'}",
         "",
@@ -307,25 +324,34 @@ async def handle_wizard_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
         try:
             inv = cs.query(Invoice).get(inv_id)
             client = inv.client
-            if state["step"] == "phone":
+
+            if state["step"] == "name":
+                client.name = text
+            elif state["step"] == "phone":
                 client.phone = text
-                cs.commit()
-                if not client.address:
-                    state["step"] = "address"
-                    await update.effective_message.reply_text("What's the client's full address?")
-                    return
             elif state["step"] == "address":
                 client.address = text
-                cs.commit()
+            cs.commit()
 
-            if client.phone and client.address:
-                if inv.status == "needs_client_details":
-                    inv.status = "pending_approval"
-                    cs.commit()
-                del PENDING_CLIENT_DETAILS_WIZARD[user_id]
-                await update.effective_message.reply_text(
-                    f"✅ Details saved for {inv.invoice_number}. You can now tap Approve on the draft above."
-                )
+            still_missing = missing_client_fields(client)
+            if still_missing:
+                next_step = still_missing[0]
+                state["step"] = next_step
+                prompts = {
+                    "name": "What's the client's name?",
+                    "phone": "What's the client's phone number?",
+                    "address": "What's the client's full address?",
+                }
+                await update.effective_message.reply_text(prompts[next_step])
+                return
+
+            if inv.status == "needs_client_details":
+                inv.status = "pending_approval"
+                cs.commit()
+            del PENDING_CLIENT_DETAILS_WIZARD[user_id]
+            await update.effective_message.reply_text(
+                f"✅ Details saved for {inv.invoice_number}. You can now tap Approve on the draft above."
+            )
         finally:
             cs.close()
         return
@@ -722,13 +748,18 @@ async def handle_fill_details_button(update: Update, context: ContextTypes.DEFAU
             await query.answer("Invoice no longer exists.", show_alert=True)
             return
         client = inv.client
-        first_missing = "phone" if not client.phone else "address"
+        missing = missing_client_fields(client)
+        first_missing = missing[0] if missing else "phone"
     finally:
         cs.close()
 
     PENDING_CLIENT_DETAILS_WIZARD[query.from_user.id] = {"invoice_id": inv_id, "step": first_missing}
-    prompt = "What's the client's phone number?" if first_missing == "phone" else "What's the client's full address?"
-    await context.bot.send_message(chat_id=query.message.chat.id, text=f"✏️ {prompt}")
+    prompts = {
+        "name": "What's the client's name?",
+        "phone": "What's the client's phone number?",
+        "address": "What's the client's full address?",
+    }
+    await context.bot.send_message(chat_id=query.message.chat.id, text=f"✏️ {prompts[first_missing]}")
 
 
 async def handle_limit_preset_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -957,7 +988,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cs.add(inv)
         cs.commit()
 
-        missing = not client.phone or not client.address
+        missing = bool(missing_client_fields(client))
         if missing:
             inv.status = "needs_client_details"
             cs.commit()
@@ -986,7 +1017,7 @@ async def set_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     /setdetails 1 phone=+6591234567 address=683C Edgedale Plains 03-689 Singapore 823683
     """
     if len(context.args) < 2:
-        await update.effective_message.reply_text("Usage: /setdetails <invoice_id> phone=+65... address=full address here")
+        await update.effective_message.reply_text("Usage: /setdetails <invoice_id> name=... phone=+65... address=full address here")
         return
 
     reg_session = get_session()
@@ -1004,8 +1035,8 @@ async def set_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     invoice_id = int(context.args[0])
     rest = " ".join(context.args[1:])
     kv = {}
-    for key in ("phone", "address"):
-        m = re.search(rf"{key}=(.*?)(?=\s+(?:phone|address)=|$)", rest)
+    for key in ("name", "phone", "address"):
+        m = re.search(rf"{key}=(.*?)(?=\s+(?:name|phone|address)=|$)", rest)
         if m and m.group(1).strip():
             kv[key] = m.group(1).strip()
 
@@ -1016,19 +1047,21 @@ async def set_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text("Invoice not found in this company.")
             return
         client = inv.client
+        if "name" in kv:
+            client.name = kv["name"]
         if "phone" in kv:
             client.phone = kv["phone"]
         if "address" in kv:
             client.address = kv["address"]
         cs.commit()
 
-        if client.phone and client.address and inv.status == "needs_client_details":
+        if not missing_client_fields(client) and inv.status == "needs_client_details":
             inv.status = "pending_approval"
             cs.commit()
 
         await update.effective_message.reply_text(
             f"Updated client details for invoice {inv.invoice_number}.\n"
-            f"Phone: {client.phone}\nAddress: {client.address}\n\n"
+            f"Name: {client.name}\nPhone: {client.phone}\nAddress: {client.address}\n\n"
             f"You can now Approve it from the earlier message."
         )
     finally:
@@ -1068,11 +1101,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         client = inv.client
-        if not client.phone or not client.address:
+        if missing_client_fields(client):
             await context.bot.send_message(
                 chat_id=query.message.chat.id,
                 text=(
                     f"⚠️ Can't approve {inv.invoice_number} yet - still missing client details.\n\n"
+                    f"Name: {'MISSING' if is_name_missing(client) else client.name}\n"
                     f"Phone: {client.phone or 'MISSING'}\n"
                     f"Address: {client.address or 'MISSING'}"
                 ),
