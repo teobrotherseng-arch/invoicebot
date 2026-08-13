@@ -44,6 +44,7 @@ from db import init_db, get_session, get_company_session, get_company_by_chat, c
 from transcribe import transcribe_audio
 from extract import extract_invoice_data
 from invoice_pdf import build_invoice_pdf
+from logo_processing import process_logo
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -872,27 +873,38 @@ async def list_approvers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_logo_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Only meaningful right after /setlogo or /newcompany - saves the image as
     that company's logo. Handles both a Telegram "photo" (compressed) and an
-    image sent "as file" (uncompressed, better quality)."""
+    image sent "as file" (uncompressed, better quality). The image is
+    automatically cleaned up (trimmed, background lightened to transparent,
+    centered on a consistent canvas) before saving."""
     user_id = update.effective_user.id
     if user_id not in PENDING_LOGO_UPLOAD:
         return  # not in logo-upload mode, ignore stray images
 
     if update.effective_message.photo:
         file_id = update.effective_message.photo[-1].file_id  # highest resolution
-        ext = ".jpg"
     elif update.effective_message.document and update.effective_message.document.mime_type in (
         "image/png", "image/jpeg", "image/jpg"
     ):
         file_id = update.effective_message.document.file_id
-        ext = ".png" if "png" in update.effective_message.document.mime_type else ".jpg"
     else:
         return
 
     company_id = PENDING_LOGO_UPLOAD.pop(user_id)
-    logo_path = os.path.join(TEMPLATE_DIR, f"company_{company_id}_logo{ext}")
+    raw_path = os.path.join(TEMPLATE_DIR, f"company_{company_id}_logo_raw")
+    logo_path = os.path.join(TEMPLATE_DIR, f"company_{company_id}_logo.png")
 
     tg_file = await context.bot.get_file(file_id)
-    await tg_file.download_to_drive(logo_path)
+    await tg_file.download_to_drive(raw_path)
+
+    try:
+        process_logo(raw_path, logo_path)
+    except Exception as e:
+        log.exception("Logo processing failed")
+        await update.effective_message.reply_text(f"❌ Couldn't process that image: {e}. Try a different file.")
+        return
+    finally:
+        if os.path.exists(raw_path):
+            os.remove(raw_path)
 
     session = get_session()
     try:
