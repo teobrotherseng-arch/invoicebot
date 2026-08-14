@@ -34,6 +34,7 @@ def build_invoice_pdf(
     total: float,
     company_name: str = "",
     company_address: str = "",
+    company_uen: str = "",
     paynow_proxy_type: str = "MOBILE",
     paynow_proxy_value: str = "",
     notes: str = None,
@@ -47,7 +48,8 @@ def build_invoice_pdf(
     doc_label = "QUOTATION" if doc_type == "quotation" else "INVOICE"
 
     # --- Header: logo (if set) + company info left, doc title right ---
-    company_block = Paragraph(f"<b>{company_name}</b><br/>{company_address or ''}", styles["Normal"])
+    uen_line = f"<br/>UEN: {company_uen}" if company_uen else ""
+    company_block = Paragraph(f"<b>{company_name}</b><br/>{company_address or ''}{uen_line}", styles["Normal"])
     if logo_path:
         logo_img = Image(logo_path, width=30 * mm, height=30 * mm, kind="proportional")
         left_cell = Table([[logo_img], [Spacer(1, 2 * mm)], [company_block]], colWidths=[100 * mm])

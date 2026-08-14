@@ -84,6 +84,10 @@ PENDING_CLIENT_DETAILS_WIZARD = {}
 # company's address (shown on the invoice header).
 PENDING_ADDRESS_INPUT = {}
 
+# In-memory: admin_id -> company_id, set when Settings > "Set company UEN"
+# is tapped, so the next plain-text message is saved as that company's UEN.
+PENDING_UEN_INPUT = {}
+
 # In-memory: admin_id -> company_id, set when Settings > "Manage approvers"
 # > "Add approver" is tapped, so the next plain-text message (a numeric
 # Telegram ID) is added to that company's approver list.
@@ -383,6 +387,19 @@ async def handle_wizard_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
             session.close()
         return
 
+    if user_id in PENDING_UEN_INPUT:
+        company_id = PENDING_UEN_INPUT.pop(user_id)
+        text = update.effective_message.text.strip()
+        session = get_session()
+        try:
+            company = session.query(Company).get(company_id)
+            company.uen = text
+            session.commit()
+            await update.effective_message.reply_text(f"✅ UEN saved for {company.name}.")
+        finally:
+            session.close()
+        return
+
     if user_id in PENDING_APPROVER_INPUT:
         company_id = PENDING_APPROVER_INPUT.pop(user_id)
         text = update.effective_message.text.strip()
@@ -548,6 +565,7 @@ def settings_menu_buttons(company_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("💰 Update PayNow", callback_data=f"settings:paynow:{company_id}")],
         [InlineKeyboardButton("📄 Update terms & conditions", callback_data=f"settings:terms:{company_id}")],
         [InlineKeyboardButton("🏠 Set company address", callback_data=f"settings:address:{company_id}")],
+        [InlineKeyboardButton("🏢 Set company UEN", callback_data=f"settings:uen:{company_id}")],
         [InlineKeyboardButton("🔢 Set invoice limit", callback_data=f"settings:limit:{company_id}")],
         [InlineKeyboardButton("👥 Manage approvers", callback_data=f"settings:approvers:{company_id}")],
         [InlineKeyboardButton("ℹ️ View current settings", callback_data=f"settings:view:{company_id}")],
@@ -643,6 +661,10 @@ async def handle_settings_menu_button(update: Update, context: ContextTypes.DEFA
         PENDING_ADDRESS_INPUT[user_id] = company_id
         await query.edit_message_text("🏠 Send the company's address as your next message.")
 
+    elif action == "uen":
+        PENDING_UEN_INPUT[user_id] = company_id
+        await query.edit_message_text("🏢 Send the company's UEN as your next message.")
+
     elif action == "approvers":
         session = get_session()
         try:
@@ -666,6 +688,7 @@ async def handle_settings_menu_button(update: Update, context: ContextTypes.DEFA
                 f"Bank: {company.bank_name or '(not set)'}\n"
                 f"Beneficiary: {company.beneficiary_name or '(not set)'}\n"
                 f"Address: {company.address or '(not set)'}\n"
+                f"UEN: {company.uen or '(not set)'}\n"
                 f"Logo: {'✅ set' if company.logo_path else '(not set)'}\n"
                 f"Terms & conditions: {'✅ set' if company.terms_and_conditions else '(not set)'}\n"
                 f"Monthly invoice limit: {company.invoice_limit_per_month or 'unlimited'}\n"
@@ -1143,6 +1166,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             total=inv.total,
             company_name=company.name,
             company_address=company.address or "",
+            company_uen=company.uen or "",
             paynow_proxy_type=company.paynow_proxy_type,
             paynow_proxy_value=company.paynow_proxy_value or "",
             logo_path=company.logo_path,

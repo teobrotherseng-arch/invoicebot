@@ -53,6 +53,7 @@ class Company(Base):
     # Per-company customization of the one standard invoice layout
     logo_path = Column(String, nullable=True)
     address = Column(String, nullable=True)
+    uen = Column(String, nullable=True)
     terms_and_conditions = Column(Text, nullable=True)
 
     # Populated once an admin uploads an example PDF and it's been learned
